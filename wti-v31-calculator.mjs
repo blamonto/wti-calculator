@@ -223,6 +223,11 @@ function scorePillar1(gee, gbif, typology, fullAnalysis) {
     c.push({ n: 'Integridad Parches', s: gee.patch_integrity.score, w: 0.10 });
   if (applicable.includes('shannon') && gee.landcover?.shannon_normalized != null)
     c.push({ n: 'Shannon (WorldCover)', s: gee.landcover.shannon_normalized, w: 0.05 });
+  // Water quality indicators (Humedales only)
+  if (applicable.includes('ndti') && gee.water_quality?.turbidity_score != null)
+    c.push({ n: 'Turbidez Agua (NDTI)', s: gee.water_quality.turbidity_score, w: 0.10 });
+  if (applicable.includes('chlorophyll') && gee.water_quality?.chla_score != null)
+    c.push({ n: 'Clorofila-a (OC3)', s: gee.water_quality.chla_score, w: 0.08 });
 
   const tw = c.reduce((s, x) => s + x.w, 0);
   return { score: tw > 0 ? Math.round(c.reduce((s, x) => s + x.s * x.w / tw, 0) * 100) / 100 : 0, components: c };
@@ -282,19 +287,29 @@ async function main() {
   const runFull = args.includes('--full');
   const investIdx = args.indexOf('--investment');
   const investmentEUR = investIdx >= 0 ? parseFloat(args[investIdx + 1]) : null;
+  const geojsonIdx = args.indexOf('--geojson');
+  const geojsonFile = geojsonIdx >= 0 ? args[geojsonIdx + 1] : null;
+  const typoIdx = args.indexOf('--typology');
+  const manualTypology = typoIdx >= 0 ? args[typoIdx + 1] : null;
 
-  // ═══ STEP 1: Municipality geometry ═══
-  console.log(`\n  → Obteniendo polígono de "${name}" (OSMnx)...`);
+  // ═══ STEP 1: Territory geometry ═══
   let muniData;
-  try {
-    muniData = getMunicipalityGeometry(name);
-  } catch (e) {
-    console.error(`  Error: No se encontró el municipio "${name}"`);
-    process.exit(1);
+  if (geojsonFile) {
+    // Use pre-built GeoJSON file (for custom fincas)
+    console.log(`\n  → Usando geometría de "${geojsonFile}"...`);
+    muniData = JSON.parse(fs.readFileSync(geojsonFile, 'utf-8'));
+  } else {
+    console.log(`\n  → Obteniendo polígono de "${name}" (OSMnx)...`);
+    try {
+      muniData = getMunicipalityGeometry(name);
+    } catch (e) {
+      console.error(`  Error: No se encontró el municipio "${name}"`);
+      process.exit(1);
+    }
   }
   const { lat, lng, area_km2: areaKm2 } = muniData;
   const areaHa = areaKm2 * 100;
-  const typology = detectTypology(lat, lng, areaKm2, '');
+  const typology = manualTypology || detectTypology(lat, lng, areaKm2, '');
 
   // Save geometry for GEE
   const geomPath = path.join(__dirname, `.wti-temp-${name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.json`);
