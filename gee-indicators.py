@@ -224,6 +224,72 @@ def compute_ndvi(geom):
     mean_ndvi = ee.Number(stats.get('NDVI')).getInfo()
     return {'mean': round(mean_ndvi, 4) if mean_ndvi else 0, 'period': '2024 Apr-Sep', 'source': 'Sentinel-2 L2A'}
 
+# ─── Water Quality (Turbidity + Chlorophyll-a) ────────────────────────────
+# Based on WILD-SQUARE/sentinel-evalscripts
+def compute_water_quality(geom):
+    """
+    Water turbidity (NDTI) and Chlorophyll-a from Sentinel-2.
+    Formulas from sentinel-evalscripts repo:
+      - Turbidity (NTU): 8.93 × (B03/B01) - 6.39  (Se2WaQ model)
+      - Chlorophyll-a (mg/m³): 4.26 × (B03/B01)^3.94
+      - NDCI: (B05 - B04) / (B05 + B04)
+    Only computed over water pixels (NDWI > 0).
+    Source: Dogliotti et al. (2015), Mishra & Mishra (2012).
+    """
+    s2 = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED') \
+        .filterBounds(geom) \
+        .filterDate('2024-01-01', '2024-12-31') \
+        .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
+
+    def compute_indices(img):
+        scl = img.select('SCL')
+        mask = scl.neq(3).And(scl.neq(8)).And(scl.neq(9)).And(scl.neq(10))
+        img = img.updateMask(mask)
+        b01 = img.select('B1').divide(10000)
+        b03 = img.select('B3').divide(10000)
+        b04 = img.select('B4').divide(10000)
+        b05 = img.select('B5').divide(10000)
+        b08 = img.select('B8').divide(10000)
+        b11 = img.select('B11').divide(10000)
+        # Water mask: NDWI > 0
+        ndwi = b03.subtract(b08).divide(b03.add(b08)).rename('NDWI')
+        water_mask = ndwi.gt(0)
+        # Turbidity (NTU) — Se2WaQ model
+        ratio = b03.divide(b01.max(0.001))
+        turbidity = ratio.multiply(8.93).subtract(6.39).rename('turbidity')
+        # Chlorophyll-a (mg/m³)
+        chla = ratio.pow(3.94).multiply(4.26).rename('chla')
+        # NDCI (Normalized Difference Chlorophyll Index)
+        ndci = b05.subtract(b04).divide(b05.add(b04).max(0.001)).rename('NDCI')
+        return turbidity.addBands(chla).addBands(ndci).addBands(ndwi).updateMask(water_mask)
+
+    composite = s2.map(compute_indices).median()
+    stats = composite.reduceRegion(
+        reducer=ee.Reducer.mean(), geometry=geom, scale=20, maxPixels=1e9
+    )
+    turb = stats.get('turbidity')
+    chla = stats.get('chla')
+    ndci = stats.get('NDCI')
+
+    turb_val = ee.Number(turb).getInfo() if turb else None
+    chla_val = ee.Number(chla).getInfo() if chla else None
+    ndci_val = ee.Number(ndci).getInfo() if ndci else None
+
+    # Score turbidity: 0 NTU = 100, >20 NTU = 0
+    turb_score = max(0, round(100 - (turb_val / 20 * 100), 1)) if turb_val and turb_val > 0 else 50
+    # Score chla: <6 mg/m³ (oligotrophic) = 100, >30 = 0
+    chla_score = max(0, round(100 - (chla_val / 30 * 100), 1)) if chla_val and chla_val > 0 else 50
+
+    return {
+        'turbidity_ntu': round(turb_val, 2) if turb_val else None,
+        'turbidity_score': turb_score,
+        'chla_mg_m3': round(chla_val, 2) if chla_val else None,
+        'chla_score': chla_score,
+        'ndci': round(ndci_val, 4) if ndci_val else None,
+        'source': 'Sentinel-2 L2A (Se2WaQ: Dogliotti 2015, Mishra & Mishra 2012)',
+        'script_ref': 'WILD-SQUARE/sentinel-evalscripts'
+    }
+
 # ─── Carbon Stock ─────────────────────────────────────────────────────────
 def compute_carbon(geom, canopy_data, landcover_data, ndvi_data, area_km2):
     """
@@ -366,6 +432,17 @@ def main():
         results['carbon'] = compute_carbon(geom, results.get('canopy', {}), results.get('landcover', {}), results.get('ndvi', {}), area_km2)
     except Exception as e:
         results['carbon'] = {'error': str(e)}
+
+    # Water Quality (turbidity + chlorophyll — for wetlands)
+    # Only compute if area has >5% water
+    water_pct = results.get('landcover', {}).get('fractions', {}).get('Water', 0)
+    wetland_pct = results.get('landcover', {}).get('fractions', {}).get('Wetland', 0)
+    if water_pct + wetland_pct > 5:
+        print("  → Water Quality: Turbidity + Chlorophyll (sentinel-evalscripts)...", file=sys.stderr)
+        try:
+            results['water_quality'] = compute_water_quality(geom)
+        except Exception as e:
+            results['water_quality'] = {'error': str(e)}
 
     # Patch Integrity (derived)
     print("  → Patch Integrity...", file=sys.stderr)
