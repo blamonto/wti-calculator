@@ -1,0 +1,13 @@
+{
+  "name": "wti-calculator",
+  "version": "3.1.0",
+  "description": "Wild Territory Index (WTI) v3.1 — Municipal environmental health scoring system",
+  "type": "module",
+  "scripts": {
+    "wti": "node wti-v31-calculator.mjs",
+    "test-somiedo": "node wti-v31-calculator.mjs Somiedo",
+    "test-somiedo-full": "node wti-v31-calculator.mjs Somiedo --full"
+  },
+  "keywords": ["environment", "biodiversity", "GEE", "GBIF", "territory", "index"],
+  "license": "MIT"
+}

@@ -1,0 +1,5 @@
+earthengine-api>=1.5.0
+ecosystem-integrity-index[client] @ git+https://github.com/landler-io/ecosystem-integrity-index.git
+osmnx>=2.0.0
+pyyaml>=6.0
+geopandas>=0.14.0
